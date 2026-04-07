@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Calculadora de Pavimentos</title>
+    <style>
+        body {
+            font-family: Arial;
+            max-width: 500px;
+            margin: auto;
+            padding: 20px;
+        }
+
+        input, button {
+            width: 100%;
+            padding: 10px;
+            margin-top: 10px;
+        }
+
+        .resultado {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Calculadora de Espesor</h1>
+
+<form action="/calculate" method="post">
+    <label>Tráfico:</label>
+    <input type="number" step="any" name="trafico" required>
+
+    <label>Resistencia del suelo:</label>
+    <input type="number" step="any" name="resistencia" required>
+
+    <button type="submit">Calcular</button>
+</form>
+
+{% if resultado is defined %}
+<div class="resultado">
+    <h2>Espesor requerido:</h2>
+    <p>{{ resultado }} m</p>
+</div>
+{% endif %}
+
+</body>
+</html>
