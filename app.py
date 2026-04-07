@@ -1,10 +1,35 @@
 import streamlit as st
 import pandas as pd
-import os
+
 
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from io import BytesIO
+
+import sqlite3
+
+DB_FILE = "database.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS calculos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trafico REAL,
+        resistencia REAL,
+        espesor REAL,
+        carpeta REAL,
+        base REAL,
+        subbase REAL
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+init_db()
 
 def generar_pdf(espesor, capas):
     buffer = BytesIO()
@@ -25,6 +50,9 @@ def generar_pdf(espesor, capas):
     contenido.append(Paragraph(f"Carpeta: {capas['carpeta']} m", styles["Normal"]))
     contenido.append(Paragraph(f"Base: {capas['base']} m", styles["Normal"]))
     contenido.append(Paragraph(f"Subbase: {capas['subbase']} m", styles["Normal"]))
+    
+    contenido.append(Spacer(1, 20))
+    contenido.append(Paragraph("Generado por Suite Básica de Cálculo Civil", styles["Italic"]))
 
     doc.build(contenido)
 
@@ -37,31 +65,26 @@ st.title("🏗 Suite Básica de Cálculo Civil")
 
 tab1, tab2, tab3 = st.tabs(["🛣 Pavimentos", "🧱 Concreto", "📐 Metrados"])
 
-# 📁 archivo CSV
-CSV_FILE = "historial.csv"
+ 
 
 # ==============================
 # 🔧 FUNCIONES
 # ==============================
 
 def calcular_espesor(trafico, resistencia):
-    if resistencia <= 0:
-        return 0
-
     espesor = (trafico ** 0.3) / (resistencia ** 0.5) * 0.1
 
-    if espesor < 0.15:
-        espesor = 0.15
-    if espesor > 0.6:
-        espesor = 0.6
+    espesor = max(0.15, min(espesor, 0.6))
 
     return round(espesor, 3)
 
 
 def calcular_capas(espesor):
     carpeta = 0.05
-    base = espesor * 0.4
-    subbase = espesor * 0.6 - carpeta
+    restante = max(0.0, espesor - carpeta)
+
+    base = restante * 0.5
+    subbase = restante * 0.5
 
     return {
         "carpeta": round(carpeta, 3),
@@ -69,46 +92,77 @@ def calcular_capas(espesor):
         "subbase": round(subbase, 3)
     }
 
+    
 
+#
+
+#
 def dosificacion_concreto(fc):
+    # Relación aproximada (tipo ACI simplificado)
     if fc <= 210:
-        cemento = 300
+        w_c = 0.60
     elif fc <= 280:
-        cemento = 350
+        w_c = 0.55
     else:
-        cemento = 400
+        w_c = 0.50
 
-    agua = cemento * 0.5
-    arena = 700
-    piedra = 1100
+    # cemento (kg/m3)
+    cemento = 350 + (fc - 210) * 0.8
+    cemento = max(300, min(cemento, 450))
+
+    agua = cemento * w_c
+
+    # proporciones típicas
+    arena = cemento * 2.2
+    piedra = cemento * 3.0
 
     return {
-        "cemento": cemento,
+        "cemento": round(cemento, 1),
         "agua": round(agua, 1),
-        "arena": arena,
-        "piedra": piedra
+        "arena": round(arena, 1),
+        "piedra": round(piedra, 1)
     }
-
-
+#
 # ==============================
 # 📊 HISTORIAL
 # ==============================
 
 def cargar_historial():
-    if os.path.exists(CSV_FILE):
-        return pd.read_csv(CSV_FILE)
-    else:
-        return pd.DataFrame(columns=[
-            "trafico", "resistencia", "espesor",
-            "carpeta", "base", "subbase"
-        ])
+    conn = sqlite3.connect(DB_FILE)
+
+    df = pd.read_sql_query("SELECT * FROM calculos ORDER BY id DESC", conn)
+
+    conn.close()
+    return df
+
 
 
 def guardar_historial(data):
-    df = cargar_historial()
-    df = pd.concat([df, pd.DataFrame([data])], ignore_index=True)
-    df.to_csv(CSV_FILE, index=False)
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
 
+    cursor.execute("""
+    INSERT INTO calculos (trafico, resistencia, espesor, carpeta, base, subbase)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (
+        data["trafico"],
+        data["resistencia"],
+        data["espesor"],
+        data["carpeta"],
+        data["base"],
+        data["subbase"]
+    ))
+
+    conn.commit()
+    conn.close()
+
+###
+def borrar_historial():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM calculos")
+    conn.commit()
+    conn.close()
 
 # ==============================
 # 🛣 TAB 1: PAVIMENTOS
@@ -116,12 +170,21 @@ def guardar_historial(data):
 
 with tab1:
     st.header("Diseño de Pavimentos")
+    st.warning("⚠️ Diseño preliminar. No reemplaza método AASHTO ni MTC.")
 
-    trafico = st.number_input("Tráfico", value=1000.0, key="trafico")
-    resistencia = st.number_input("Resistencia", value=5.0, key="resistencia")
+    trafico = st.number_input("Tráfico (veh/dia)", value=1000.0, min_value=1.0, step=100.0, key="trafico")
+    st.metric("Tráfico ingresado", f"{trafico:,.0f} veh/día")
+    resistencia = st.number_input("Resistencia", value=5.0, min_value=0.1, key="resistencia")
 
-    if st.button("Calcular Pavimento"):
+    if st.button("Calcular Pavimento", key="btn_pavimento"):
 
+        
+        # 🔒 validación
+        if trafico <= 0 or resistencia <= 0:
+            st.error("Valores deben ser mayores a 0")
+            st.stop()
+
+          
         espesor = calcular_espesor(trafico, resistencia)
         capas = calcular_capas(espesor)
 
@@ -166,7 +229,15 @@ with tab1:
 
     # historial
     st.subheader("Historial")
+      
+    col1, col2 = st.columns(2)
 
+    with col1:
+        if st.button("🗑 Limpiar historial", key="btn_delete"):
+            borrar_historial()
+            st.success("Historial borrado")
+            st.rerun()  # 🔥 recarga la app
+    
     historial = cargar_historial()
 
     if not historial.empty:
@@ -182,9 +253,14 @@ with tab1:
 with tab2:
     st.header("Dosificación de Concreto")
 
-    fc = st.number_input("Resistencia f'c (kg/cm²)", value=210, key="fc")
+    fc = st.number_input("Resistencia f'c (kg/cm²)", value=210.0, min_value=1.0, step=10.0, key="fc")
 
-    if st.button("Calcular Concreto"):
+    if st.button("Calcular Concreto", key="btn_concreto"):
+ 
+        if fc <= 0:
+            st.error("f'c debe ser mayor a 0")
+            st.stop()        
+        
 
         mix = dosificacion_concreto(fc)
 
@@ -206,13 +282,17 @@ with tab2:
 with tab3:
     st.header("Cálculo de Volumen de Concreto")
 
-    largo = st.number_input("Largo (m)", value=5.0)
-    ancho = st.number_input("Ancho (m)", value=3.0)
-    altura = st.number_input("Espesor / Altura (m)", value=0.2)
+    largo = st.number_input("Largo (m)", value=5.0, min_value=0.1)
+    ancho = st.number_input("Ancho (m)", value=3.0, min_value=0.1)
+    altura = st.number_input("Espesor / Altura (m)", value=0.2, min_value=0.01)
+    
+    fc = st.number_input("f'c para dosificación (kg/cm²)", value=210.0, min_value=1.0, key="fc_vol")
 
-    fc = st.number_input("f'c para dosificación (kg/cm²)", value=210, key="fc_vol")
+    if st.button("Calcular Volumen", key="btn_volumen"):
 
-    if st.button("Calcular Volumen"):
+        if largo <= 0 or ancho <= 0 or altura <= 0:
+            st.error("Dimensiones deben ser mayores a 0")
+            st.stop()
 
         volumen = largo * ancho * altura
 
@@ -231,7 +311,10 @@ with tab3:
         agua_total = mix["agua"] * volumen
         arena_total = mix["arena"] * volumen
         piedra_total = mix["piedra"] * volumen
-
+        
+        bolsas = cemento_total / 42.5
+        st.write(f"🧱 Cemento: {cemento_total:.1f} kg ({bolsas:.1f} bolsas de 42.5 kg)")
+        
         df_materiales = pd.DataFrame({
             "Material": ["Cemento (kg)", "Agua (L)", "Arena (kg)", "Piedra (kg)"],
             "Total": [
@@ -242,4 +325,5 @@ with tab3:
             ]
         })
 
+        
         st.dataframe(df_materiales, use_container_width=True)
